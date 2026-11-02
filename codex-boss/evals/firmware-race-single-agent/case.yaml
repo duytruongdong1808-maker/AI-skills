@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: firmware-race-single-agent
+expected_outcome: |
+  A single delegated task on a strong tier (frontier or workhorse at high effort) justified by concurrency/timing risk, with a brief that passes along the suspected race, the relevant files (espnow_rx.cpp, packets.h), scope limits, and a concrete way to verify; plus the launch command and a review plan.

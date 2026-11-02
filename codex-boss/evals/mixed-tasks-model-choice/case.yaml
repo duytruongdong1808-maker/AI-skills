@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: mixed-tasks-model-choice
+expected_outcome: |
+  A dispatch plan with one task per item, each with a model and effort justified by difficulty (docs on a cheap tier, tests on a balanced tier, the MQTT investigation on a stronger tier with high effort), one brief per task with acceptance criteria and a report path, separate worktrees, and Terminal-tab launch commands.

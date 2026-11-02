@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: trivial-task-right-size
+expected_outcome: |
+  The task is treated as mechanical: either done directly by Claude or delegated to the cheapest tier at low effort, with no frontier model and no multi-agent split; if delegated, a short brief and launch command.
