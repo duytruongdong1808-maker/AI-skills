@@ -64,22 +64,7 @@ Then launch — do not wait for approval unless the plan involves something the 
 (scope is unclear, a task is risky or expensive like several Astra runs, or it changes something
 outside the repo). The user can interrupt if they disagree.
 
-### 5. Write a brief for each task
-
-Copy `assets/brief-template.md` and fill every section. What makes a brief good:
-
-- **Context the agent cannot discover**: decisions already made in this conversation, constraints
-  the user mentioned, hardware facts, why the obvious approach is wrong. This is the part agents
-  most often lack.
-- **Concrete acceptance criteria** with the exact command to run.
-- **Explicit scope**: which files it may change, which belong to another agent.
-- **The report path**, so you can collect the result reliably.
-
-Save the brief as `_codex_task/brief.md` inside that task's worktree; the report goes to
-`_codex_task/report.md` in the same folder (the sandbox can write there). Add `_codex_task/` to
-the repo's `.git/info/exclude` once so it never gets committed.
-
-### 6. Set up a worktree per agent
+### 5. Set up a worktree per agent
 
 Each agent gets its own git worktree so parallel agents can't trample each other or your working
 copy:
@@ -100,6 +85,40 @@ needs a virtualenv, toolchain, or SDK outside the worktree, note its path — th
 
 The Codex sandbox cannot write `.git`, so agents don't commit. You commit after review.
 
+**Keep agent-written files out of the folders the sandbox protects.** On Windows the sandbox
+re-locks `.git`, `.agents` and `.codex` inside the workspace before every command. If an agent
+creates one of those folders itself, the sandbox can no longer lock it and every later command
+in that worktree is refused — for this agent and every agent after it. So scratch files, build
+outputs and intermediate artifacts go somewhere else (e.g. `_work/` or `_stage/`), even when the
+project's own convention is `.agents/`. `references/windows-sandbox.md` has the symptoms, the
+diagnosis and the repair.
+
+**A chain of dependent tasks shares one worktree.** When each task builds on the previous one's
+output (staged builds, migrations, a pipeline), creating a fresh worktree per task throws away
+the untracked artifacts the next task needs. Use a single worktree and branch for the chain, run
+one agent at a time, and between tasks: review, commit, delete the old `report.md`, write the
+next brief. Separate worktrees are for tasks that can run in parallel.
+
+**Do the things a sandboxed agent cannot.** It has no network and can only write inside the
+worktree, so downloads, installs and anything under the user's profile are yours to do before
+launch. Say in the brief what is already installed and where.
+
+### 6. Write a brief for each task
+
+Copy `assets/brief-template.md` and fill every section. What makes a brief good:
+
+- **Context the agent cannot discover**: decisions already made in this conversation, constraints
+  the user mentioned, hardware facts, why the obvious approach is wrong. This is the part agents
+  most often lack.
+- **Concrete acceptance criteria** with the exact command to run.
+- **Explicit scope**: which files it may change, which belong to another agent.
+- **The report path**, so you can collect the result reliably.
+
+Save the brief as `_codex_task/brief.md` inside that task's worktree; the report goes to
+`_codex_task/report.md` in the same folder (the sandbox can write there). Add `_codex_task/` and
+the scratch folder you name in the brief (e.g. `_work/`) to the repo's `.git/info/exclude` once
+so they never get committed.
+
 ### 7. Launch each agent in its own Terminal tab
 
 The user wants to watch agents work, and interactive sessions show up in the Codex app's thread
@@ -119,6 +138,20 @@ list, which `codex exec` runs don't. So: one Terminal tab per agent (`open_termi
 - `--no-alt-screen` keeps output in scrollback so `read_terminal` can see it.
 - Name the tab after the task (e.g. `codex: T2 mqtt-reconnect (sol/high)`).
 - Launch independent tasks in parallel; launch dependent ones only after their dependency is merged.
+- Give `run_in_terminal` a `cwd` inside the session's own folders and let `-C` point Codex at the
+  worktree; a worktree outside the session is not accepted as the tab's directory.
+- Close a finished agent's tab (`stop_terminal_tab` with `close: true`) once you have its report.
+  An idle interactive session is still a live Codex process holding the worktree.
+
+**Running without the sandbox** (`-s danger-full-access`) removes the only thing confining the
+agent to the worktree, so it is not yours to choose. Use it only when the user asks for it in so
+many words, and only after you have read the sandbox log and told them what is actually broken —
+most sandbox failures have a cheap fix (see `references/windows-sandbox.md`). When they do ask:
+put the confinement into the brief as hard limits (write only inside the worktree, no installs,
+no network, no git beyond `status`/`diff`, no recursive deletes), say in the dispatch log that
+the run was unsandboxed, and during review check `git status` of the main checkout as well as
+the worktree. Go back to `workspace-write` as soon as the cause is fixed. Never use
+`--dangerously-bypass-approvals-and-sandbox`.
 
 If Terminal-tab tools are not available in this environment, fall back to a background
 `codex exec` with the same flags plus `-o _codex_task/last-message.md`, and tell the user that
@@ -126,26 +159,50 @@ these runs won't appear in the Codex app.
 
 ### 8. Monitor without babysitting
 
-The signal that an agent is done is its report file appearing. Wait for it efficiently (e.g. a
-Monitor/until-loop on the file's existence, or `read_terminal` with `wait_for_output_ms`), rather
-than repeatedly sleeping and polling. Glance at the terminal occasionally to catch an agent that
-is stuck, looping, or asking a question — if it asks something, answer it in the tab or relaunch
-with a clarified brief.
+An agent that finishes writes its report. An agent whose shell or sandbox breaks cannot write
+anything, so waiting on the report file alone hangs for ever and the user finds out before you
+do. Wait with the bundled script instead, in the background, right after launching:
+
+```bash
+python <this-skill-dir>/scripts/wait_agent.py --worktree <worktree>
+```
+
+It watches the report file and the agent's own Codex session log, and exits with one line:
+
+| Output | Meaning | What to do |
+|---|---|---|
+| `REPORT <path>` | The report exists | Review (step 9) |
+| `TURN_ENDED_NO_REPORT` | The turn ended or was stopped by the user with no report; the agent's last message and any sandbox error are printed | Read them, fix the cause, relaunch. Don't relaunch unchanged |
+| `NO_SESSION` | Codex never started a session for this worktree | Read the tab: bad flag, quoting, or a declined command |
+| `STILL_RUNNING` | Timeout (default 9 min, under the background-command limit); prints how long the session has been idle and the session file | Start the script again with `--session <the file it printed>` — without it the script only looks for sessions created in the last 3 minutes and reports `NO_SESSION` for an agent that is still working. If it has been idle for many minutes, read the tab |
+
+When an agent dies, tell the user in the same turn — what failed, what survived, what you are
+doing about it. Two identical failures in a row mean the environment is broken, not the agent:
+stop relaunching and diagnose.
+
+Glance at the terminal now and then (`read_terminal`) to catch an agent that is looping or has
+asked a question — answer it in the tab or relaunch with a clarified brief.
 
 ### 9. Review like a lead, not a rubber stamp
 
 A report is the agent's claim, not proof. For each task:
 
-1. Read the report, then read the actual diff (`git -C <worktree> diff <base>`).
+1. Read the report, then read the actual diff (`git -C <worktree> diff <base>`). `diff` leaves
+   out files the agent created, so run `git -C <worktree> status --short` as well and read every
+   untracked (`??`) file in full.
 2. Check every acceptance criterion yourself. Run the checks yourself — don't trust pasted output.
 3. Look for what agents typically get wrong: edits outside scope, deleted or weakened tests,
-   stubbed/placeholder logic, swallowed errors, silent API changes, unrequested refactors.
+   stubbed/placeholder logic, swallowed errors, silent API changes, unrequested refactors. On
+   Windows also check new text files for a UTF-8 BOM (PowerShell adds one) and strip it.
 4. Decide:
    - **Accept** → commit on the task branch.
    - **Small fix** → do it yourself; cheaper than another round.
    - **Rework** → write `_codex_task/fix-<n>.md` with precisely what's wrong and resume the same
      session (`codex resume <session-id>` in the same tab, or type into the still-open session) so
-     the agent keeps its context. If the failure looks like a capability gap rather than a brief
+     the agent keeps its context. Delete the old `report.md` first, or the wait returns `REPORT`
+     at once on the stale file; then, after sending the fix message, wait with
+     `wait_agent.py --session <session file>` (printed with `REPORT` by the earlier wait), since
+     a resumed session is too old to be found by worktree. If the failure looks like a capability gap rather than a brief
      gap, follow the escalation ladder in `references/model-selection.md`.
 
 ### 10. Integrate and report
@@ -170,5 +227,6 @@ Followed by what is verified, what isn't, and anything that needs the user's dec
   review cycle. When unsure between two tiers on a task that is likely to fail, take the higher one.
 - **Keep the user informed** with short status lines — what launched, what's done, what's being
   reworked — not a running narrative.
-- **Never let agents touch secrets, credentials, or production systems**, and don't give them
-  `--dangerously-bypass-approvals-and-sandbox`.
+- **Never let agents touch secrets, credentials, or production systems.** The sandbox is what
+  makes `-a never` safe; dropping it is the user's decision, never a workaround you reach for
+  (step 7).

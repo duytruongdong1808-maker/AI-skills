@@ -28,6 +28,13 @@ lead will review your diff, run the checks, and commit; you do not commit.
 - Run the checks above yourself before reporting. If a check cannot run in your sandbox, say so.
 - If something in this brief is wrong or ambiguous, choose the most reasonable reading, continue,
   and flag it in the report rather than stopping.
+- Put scratch files and intermediate outputs in `<scratch dir, e.g. _work/>`. Never create or
+  write inside `.git`, `.agents` or `.codex`: the sandbox protects those folders and creating
+  one breaks every later command.
+- Write text files as UTF-8 without a BOM.
+- If your commands start failing for reasons outside the task (sandbox, shell or tool errors),
+  do not keep retrying: write the report at once with STATUS `blocked`, the exact error text and
+  what you finished. A report written early is worth more than a perfect one never written.
 
 ## Report
 When done, write `<report path>` with:
